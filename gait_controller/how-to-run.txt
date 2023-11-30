@@ -1,0 +1,10 @@
+before run =>
+- open "cmake_install.cmake" and "CMakeCache.txt", change all dir "/home/charlie/gait_controller" to according your dir file placement
+- open readme.txt in matplotplusplus folder
+
+to run, copy this to terminal=>
+cmake .
+
+cmake --build . -j8
+
+./my_target

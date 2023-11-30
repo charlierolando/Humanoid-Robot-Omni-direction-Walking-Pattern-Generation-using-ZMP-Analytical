@@ -1,0 +1,963 @@
+#include<iostream>
+#include<vector>
+#include<cmath>
+using namespace std;
+
+#include <matplot/matplot.h>
+using namespace matplot;
+
+#define RIGHT_SUPPORT 0
+#define LEFT_SUPPORT 1
+
+int i = 1;
+
+class GaitController
+{
+  public:
+    GaitController();
+    ~GaitController();
+
+    GaitController &print_gait_parameter();
+    GaitController &get_walking_pattern();
+    GaitController &get_zmp_trajectory();
+    GaitController &get_com_trajectory();
+    GaitController &get_foot_trajectory();
+    GaitController &get_foot_pose();
+    GaitController &add_new_footstep();
+    GaitController &swap_support_foot();
+
+    // Constant distance between hip to center
+    double hip_offset = 0.035;
+
+    // Command for walking pattern
+    // Defined as motion vector
+    double cmd_x = 0.04;
+    double cmd_y = 0.02;
+    double cmd_a = 0.00;
+
+    double sx = 0.0;
+    double sy = 0.0;
+    double sa = 0.0;
+
+    // ZMP trajectory
+    double zmp_x = 0;
+    double zmp_y = 0;
+
+    // Footsteps FIFO
+    // Use 3 foot pattern for 1 cycle gait
+
+    std::vector<std::vector<double>> footsteps = {
+      {0.0, -hip_offset, 0},
+      {0.0, hip_offset, 0},
+      {0.0, -hip_offset, 0}
+    };
+
+    std::vector<double> zmp_x_record;
+    std::vector<double> zmp_y_record;
+
+    std::vector<std::vector<double>> footsteps_record = {
+      {0.0, -hip_offset, 0},
+      {0.0, hip_offset, 0},
+      {0.0, -hip_offset, 0}
+    };
+
+    // First support is right leg
+    int support_foot = RIGHT_SUPPORT;
+
+    // CoM pose
+    std::vector<double> com = {0, 0, 0, 0, 0, 0, 0};
+    double com_yaw = 0;
+
+    // Initial CoM yaw orientation
+    double init_com_yaw = 0.0;
+    // Target CoM yaw orientation
+    double target_com_yaw = 0.0;
+
+    std::vector<double> com_x_record;
+    std::vector<double> com_y_record;
+    std::vector<double> com_z_record;
+
+    // Initial position and orientation for left swing foot
+    std::vector<double> init_lfoot_pose = {0, 0, 0, 0, 0, 0, 0};
+    std::vector<double> init_lfoot_position = {0, 0, 0};
+
+    double init_lfoot_orientation_yaw = 0.0;
+
+    // Target position and orientation for left swing foot
+    std::vector<double> target_lfoot_pose = {0, 0, 0, 0, 0, 0, 0};
+    std::vector<double> target_lfoot_position = {0, 0, 0};
+
+    double target_lfoot_orientation_yaw = 0.0;
+
+    // Initial position and orientation for right swing foot
+    std::vector<double> init_rfoot_pose = {0, 0, 0, 0, 0, 0, 0};
+    std::vector<double> init_rfoot_position = {0, 0, 0};
+
+    double init_rfoot_orientation_yaw = 0.0;
+
+    // Target position and orientation for right swing foot
+    std::vector<double> target_rfoot_pose = {0, 0, 0, 0, 0, 0, 0};
+    std::vector<double> target_rfoot_position = {0, 0, 0};
+
+    double target_rfoot_orientation_yaw = 0.0;
+
+    // Current left foot and right foot pose written from world frame
+    std::vector<double> cur_rfoot = {0, -hip_offset, 0, 0, 0, 0, 0};
+    std::vector<double> cur_lfoot = {0, hip_offset, 0, 0, 0, 0, 0};
+
+    // Current left foot and right foot pose written from CoM frame
+    std::vector<double> left_foot_pose;
+    std::vector<double> right_foot_pose;
+
+    // From get_gait_parameter
+    double zc = 0.33;               // CoM constant height
+    double max_swing_height = 0.03; // Maximum swing foot height
+
+    double t_step = 0.25;    // Timing for 1 cycle gait
+    double dsp_ratio = 0.15; // Percent of DSP phase
+    double dt = 0.01;        // Control cycle
+
+    double t_dsp = dsp_ratio * t_step;
+    double t_ssp = (1.0 - dsp_ratio) * t_step;
+    // int t = 0;
+    double t = 0;
+    double dt_bez = 1 / (t_ssp / dt);
+    double t_bez = 0;
+    // From get_gait_parameter
+
+    // To Fuction get_zmp_trajectory
+    double t0, t1, t2, tf;
+    double com0_x, com0_y; // Initial CoM position
+    double com1_x, com1_y; // Final CoM position
+    double sup_x, sup_y; // Support foot
+    // To Fuction get_zmp_trajectory
+
+    std::vector<double> foot_xl_record;
+    std::vector<double> foot_yl_record;
+    std::vector<double> foot_zl_record;
+    std::vector<double> foot_xr_record;
+    std::vector<double> foot_yr_record;
+    std::vector<double> foot_zr_record;
+};
+
+GaitController::GaitController()
+{
+}
+
+GaitController::~GaitController()
+{
+}
+
+void printVector(int jmh, vector<double> Vector)
+{
+  for (int i = 0; i < jmh; i++)
+  {
+    cout << Vector[i] << " ";
+  }
+  cout << endl;
+}
+
+void printMatrix4x4(vector<vector<double>> Matrix)
+{
+  for (int i = 0; i <= 3; i++)
+  {
+    cout << Matrix[i][0] << "  " << Matrix[i][1] << "  " << Matrix[i][2] << "  " << Matrix[i][3];
+    cout << endl;
+  }
+}
+
+vector<vector<double>> return_matrix_3x3_from_4x4(vector<vector<double>> mat1)
+{
+  vector<vector<double>> mat2 = {
+    {0, 0, 0},
+    {0, 0, 0},
+    {0, 0, 0}
+  };
+
+  for (int i = 0; i <= 2; i++)
+  {
+    for (int j = 0; j <= 2; j++)
+    {
+      mat2[i][j] = mat1[i][j];
+    }
+  }
+  return mat2;
+}
+
+vector<vector<double>> dot_matrix_4x4(vector<vector<double>> m1, vector<vector<double>> m2)
+{
+  vector<vector<double>> pro = {
+    {1, 0, 0, 0},
+    {0, 1, 0, 0},
+    {0, 0, 1, 0},
+    {0, 0, 0, 1}
+  };
+
+  for (int i = 0; i < 4; i++)
+  {
+    for (int j = 0; j < 4; j++)
+    {
+      pro[i][j] = 0;
+
+      for (int k = 0; k < 4; k++)
+      {
+        pro[i][j] = pro[i][j] + (m1[i][k] * m2[k][j]);
+      }
+    }
+  }
+
+  return pro;
+}
+
+vector<vector<double>> inv_matrix_4x4(vector<vector<double>> m)
+{
+  vector<vector<double>> mm = {
+    {1, 0, 0, 0},
+    {0, 1, 0, 0},
+    {0, 0, 1, 0},
+    {0, 0, 0, 1}
+  };
+
+  double A2323 = m[2][2] * m[3][3] - m[2][3] * m[3][2];
+  double A1323 = m[2][1] * m[3][3] - m[2][3] * m[3][1];
+  double A1223 = m[2][1] * m[3][2] - m[2][2] * m[3][1];
+  double A0323 = m[2][0] * m[3][3] - m[2][3] * m[3][0];
+  double A0223 = m[2][0] * m[3][2] - m[2][2] * m[3][0];
+  double A0123 = m[2][0] * m[3][1] - m[2][1] * m[3][0];
+  double A2313 = m[1][2] * m[3][3] - m[1][3] * m[3][2];
+  double A1313 = m[1][1] * m[3][3] - m[1][3] * m[3][1];
+  double A1213 = m[1][1] * m[3][2] - m[1][2] * m[3][1];
+  double A2312 = m[1][2] * m[2][3] - m[1][3] * m[2][2];
+  double A1312 = m[1][1] * m[2][3] - m[1][3] * m[2][1];
+  double A1212 = m[1][1] * m[2][2] - m[1][2] * m[2][1];
+  double A0313 = m[1][0] * m[3][3] - m[1][3] * m[3][0];
+  double A0213 = m[1][0] * m[3][2] - m[1][2] * m[3][0];
+  double A0312 = m[1][0] * m[2][3] - m[1][3] * m[2][0];
+  double A0212 = m[1][0] * m[2][2] - m[1][2] * m[2][0];
+  double A0113 = m[1][0] * m[3][1] - m[1][1] * m[3][0];
+  double A0112 = m[1][0] * m[2][1] - m[1][1] * m[2][0];
+
+  double det = m[0][0] * ( m[1][1] * A2323 - m[1][2] * A1323 + m[1][3] * A1223 )
+               - m[0][1] * ( m[1][0] * A2323 - m[1][2] * A0323 + m[1][3] * A0223 )
+               + m[0][2] * ( m[1][0] * A1323 - m[1][1] * A0323 + m[1][3] * A0123 )
+               - m[0][3] * ( m[1][0] * A1223 - m[1][1] * A0223 + m[1][2] * A0123 );
+
+  det = 1 / det;
+
+  mm[0][0] = det *   ( m[1][1] * A2323 - m[1][2] * A1323 + m[1][3] * A1223);
+  mm[0][1] = det * - ( m[0][1] * A2323 - m[0][2] * A1323 + m[0][3] * A1223);
+  mm[0][2] = det *   ( m[0][1] * A2313 - m[0][2] * A1313 + m[0][3] * A1213);
+  mm[0][3] = det * - ( m[0][1] * A2312 - m[0][2] * A1312 + m[0][3] * A1212);
+  mm[1][0] = det * - ( m[1][0] * A2323 - m[1][2] * A0323 + m[1][3] * A0223);
+  mm[1][1] = det *   ( m[0][0] * A2323 - m[0][2] * A0323 + m[0][3] * A0223);
+  mm[1][2] = det * - ( m[0][0] * A2313 - m[0][2] * A0313 + m[0][3] * A0213);
+  mm[1][3] = det *   ( m[0][0] * A2312 - m[0][2] * A0312 + m[0][3] * A0212);
+  mm[2][0] = det *   ( m[1][0] * A1323 - m[1][1] * A0323 + m[1][3] * A0123);
+  mm[2][1] = det * - ( m[0][0] * A1323 - m[0][1] * A0323 + m[0][3] * A0123);
+  mm[2][2] = det *   ( m[0][0] * A1313 - m[0][1] * A0313 + m[0][3] * A0113);
+  mm[2][3] = det * - ( m[0][0] * A1312 - m[0][1] * A0312 + m[0][3] * A0112);
+  mm[3][0] = det * - ( m[1][0] * A1223 - m[1][1] * A0223 + m[1][2] * A0123);
+  mm[3][1] = det *   ( m[0][0] * A1223 - m[0][1] * A0223 + m[0][2] * A0123);
+  mm[3][2] = det * - ( m[0][0] * A1213 - m[0][1] * A0213 + m[0][2] * A0113);
+  mm[3][3] = det *   ( m[0][0] * A1212 - m[0][1] * A0212 + m[0][2] * A0112);
+
+  return mm;
+}
+
+vector<double> quaternion_from_matrix(vector<vector<double>> m)
+{
+  vector<double> q = {0, 0, 0, 0};
+
+  double w = sqrt(1.0 + m[0][0] + m[1][1] + m[2][2]) / 2.0;
+  double w4 = (4.0 * w);
+  double x = (m[2][1] - m[1][2]) / w4;
+  double y = (m[0][2] - m[2][0]) / w4;
+  double z = (m[1][0] - m[0][1]) / w4;
+
+  q[0] = w;
+  q[1] = x;
+  q[2] = y;
+  q[3] = z;
+
+  return q;
+}
+
+vector<vector<double>> matrix_from_quaternion(double x, double y, double z, double w)
+{
+  vector<vector<double>> m = {
+    {0, 0, 0},
+    {0, 0, 0},
+    {0, 0, 0}
+  };
+
+  double q0 = x;
+  double q1 = y;
+  double q2 = z;
+  double q3 = w;
+
+  // First row of the rotation matrix
+  m[0][0] = 2 * (q0 * q0 + q1 * q1) - 1;
+  m[0][1] = 2 * (q1 * q2 - q0 * q3);
+  m[0][2] = 2 * (q1 * q3 + q0 * q2);
+
+  // Second row of the rotation matrix
+  m[1][0] = 2 * (q1 * q2 + q0 * q3);
+  m[1][1] = 2 * (q0 * q0 + q2 * q2) - 1;
+  m[1][2] = 2 * (q2 * q3 - q0 * q1);
+
+  // Third row of the rotation matrix
+  m[2][0] = 2 * (q1 * q3 - q0 * q2);
+  m[2][1] = 2 * (q2 * q3 + q0 * q1);
+  m[2][2] = 2 * (q0 * q0 + q3 * q3) - 1;
+
+  return m;
+}
+
+vector<vector<double>> create_tf_matrix(vector<double> list_xyz_qxyzw)
+{
+  vector<vector<double>> T_mat = {
+    {1, 0, 0, 0},
+    {0, 1, 0, 0},
+    {0, 0, 1, 0},
+    {0, 0, 0, 1}
+  };
+
+  T_mat[0][3] = list_xyz_qxyzw[0];
+  T_mat[1][3] = list_xyz_qxyzw[1];
+  T_mat[2][3] = list_xyz_qxyzw[2];
+
+  vector<vector<double>> R_mat = {
+    {0, 0, 0},
+    {0, 0, 0},
+    {0, 0, 0}
+  };
+
+  R_mat = matrix_from_quaternion(list_xyz_qxyzw[6], list_xyz_qxyzw[3], list_xyz_qxyzw[4], list_xyz_qxyzw[5]);
+
+  for (int i = 0; i <= 2; i++) // T_mat[:3,:3] = R_mat
+  {
+    for (int j = 0; j <= 2; j++)
+    {
+      T_mat[i][j] = R_mat[i][j];
+    }
+  }
+
+  return T_mat;
+}
+
+vector<double> vectorAdd2(vector<double> myDouble1, vector<double> myDouble2)
+{
+  vector<double> myDouble = {0, 0};
+
+  myDouble[0] = myDouble2[0] + myDouble1[0];
+  myDouble[1] = myDouble2[1] + myDouble1[1];
+
+  return myDouble;
+}
+
+vector<double> vectorAdd3(vector<double> myDouble1, vector<double> myDouble2)
+{
+  vector<double> myDouble = {0, 0, 0};
+
+  myDouble[0] = myDouble2[0] + myDouble1[0];
+  myDouble[1] = myDouble2[1] + myDouble1[1];
+  myDouble[2] = myDouble2[2] + myDouble1[2];
+
+  return myDouble;
+}
+
+vector<double> doubleVectorMultipy2(double myDouble, vector<double> myDouble1)
+{
+  vector<double> myDouble2 = {0, 0};
+
+  myDouble2[0] = myDouble * myDouble1[0];
+  myDouble2[1] = myDouble * myDouble1[1];
+
+  return myDouble2;
+}
+
+vector<double> doubleVectorMultipy3(double myDouble, vector<double> myDouble1)
+{
+  vector<double> myDouble2 = {0, 0, 0};
+
+  myDouble2[0] = myDouble * myDouble1[0];
+  myDouble2[1] = myDouble * myDouble1[1];
+  myDouble2[2] = myDouble * myDouble1[2];
+
+  return myDouble2;
+}
+
+vector<double> vectorReturn(double a, double b, double c, double d, double e, double f, double g)
+{
+  vector<double> myDouble = {0, 0, 0, 0, 0, 0, 0};
+
+  myDouble[0] = a;
+  myDouble[1] = b;
+  myDouble[2] = c;
+  myDouble[3] = d;
+  myDouble[4] = e;
+  myDouble[5] = f;
+  myDouble[6] = g;
+
+  return myDouble;
+}
+
+vector<double> rot_path(double init_angle, double target_angle, double time, double t)
+{
+  vector<double> p0 = {0, init_angle};
+  vector<double> p1 = {0, target_angle};
+  vector<double> p2 = {time, target_angle};
+  vector<double> p3 = {time, target_angle};
+
+  // vector<double> path {0, 0};
+  vector<double> path = vectorAdd2(vectorAdd2(doubleVectorMultipy2((pow((1 - t), 3)), p0), doubleVectorMultipy2((3 * pow((1 - t), 2) * t), p1)), vectorAdd2(doubleVectorMultipy2((3 * (1 - t) * pow(t, 2)), p2), doubleVectorMultipy2((pow(t, 3)), p3)));
+
+  return path;
+}
+
+vector<double> swing_foot_path(vector<double> str_pt, vector<double> end_pt, double swing_height, double t)
+{
+  vector<double> p0 = {str_pt[0], str_pt[1], str_pt[2]};
+
+  vector<double> p1 = {str_pt[0], str_pt[1], str_pt[2]};
+  p1[2] = swing_height + (0.25 * swing_height);
+
+  vector<double> p2 = {end_pt[0], end_pt[1], end_pt[2]};
+  p2[2] = swing_height + (0.25 * swing_height);
+
+  vector<double> p3 = {end_pt[0], end_pt[1], end_pt[2]};
+
+  // vector<double> path = {0, 0, 0};
+  vector<double> path = vectorAdd3(vectorAdd3(doubleVectorMultipy3((pow((1 - t), 3)), p0), doubleVectorMultipy3((3 * pow((1 - t), 2) * t), p1)), vectorAdd3(doubleVectorMultipy3((3 * (1 - t) * pow(t, 2)), p2), doubleVectorMultipy3((pow(t, 3)), p3)));
+
+  return path;
+}
+
+vector<double> quaternion_from_euler(double yaw, double pitch, double roll)
+{
+  vector<double> q = {0, 0, 0, 0};
+
+  double cy = cos(yaw * 0.5);
+  double sy = sin(yaw * 0.5);
+  double cp = cos(pitch * 0.5);
+  double sp = sin(pitch * 0.5);
+  double cr = cos(roll * 0.5);
+  double sr = sin(roll * 0.5);
+
+  double w = cr * cp * cy + sr * sp * sy;
+  double x = sr * cp * cy - cr * sp * sy;
+  double y = cr * sp * cy + sr * cp * sy;
+  double z = cr * cp * sy - sr * sp * cy;
+
+  q[0] = x;
+  q[1] = y;
+  q[2] = z;
+  q[3] = w;
+
+  return q;
+}
+
+vector<double> euler_from_quaternion(double x, double y, double z, double w)
+{
+  vector<double> eu = {0, 0, 0};
+
+  // roll (x-axis rotation)
+  double sinr_cosp = 2 * (w * x + y * z);
+  double cosr_cosp = 1 - 2 * (x * x + y * y);
+  eu[0] = std::atan2(sinr_cosp, cosr_cosp);
+
+  // pitch (y-axis rotation)
+  double sinp = 2 * (w * y - z * x);
+  if (std::abs(sinp) >= 1)
+    eu[1] = std::copysign(M_PI / 2, sinp); // use 90 degrees if out of range
+  else
+    eu[1] = std::asin(sinp);
+
+  // yaw (z-axis rotation)
+  double siny_cosp = 2 * (w * z + x * y);
+  double cosy_cosp = 1 - 2 * (y * y + z * z);
+  eu[2] = std::atan2(siny_cosp, cosy_cosp);
+
+  return eu;
+}
+
+GaitController &GaitController::get_foot_pose()
+{
+  vector<vector<double>> world_to_com = {
+    {1, 0, 0, 0},
+    {0, 1, 0, 0},
+    {0, 0, 1, 0},
+    {0, 0, 0, 1}
+  };
+
+  world_to_com = create_tf_matrix(com);
+
+  vector<vector<double>> world_to_lfoot = {
+    {1, 0, 0, 0},
+    {0, 1, 0, 0},
+    {0, 0, 1, 0},
+    {0, 0, 0, 1}
+  };
+
+  world_to_lfoot = create_tf_matrix(cur_lfoot);
+
+  vector<vector<double>> world_to_rfoot = {
+    {1, 0, 0, 0},
+    {0, 1, 0, 0},
+    {0, 0, 1, 0},
+    {0, 0, 0, 1}
+  };
+
+  world_to_rfoot = create_tf_matrix(cur_rfoot);
+
+  vector<vector<double>> world_to_com_inv = {
+    {1, 0, 0, 0},
+    {0, 1, 0, 0},
+    {0, 0, 1, 0},
+    {0, 0, 0, 1}
+  };
+
+  world_to_com_inv = inv_matrix_4x4(world_to_com);
+
+  vector<vector<double>> com_to_lfoot = {
+    {1, 0, 0, 0},
+    {0, 1, 0, 0},
+    {0, 0, 1, 0},
+    {0, 0, 0, 1}
+  };
+
+  com_to_lfoot = dot_matrix_4x4(world_to_com_inv, world_to_lfoot);
+
+  vector<vector<double>> com_to_rfoot = {
+    {1, 0, 0, 0},
+    {0, 1, 0, 0},
+    {0, 0, 1, 0},
+    {0, 0, 0, 1}
+  };
+
+  com_to_rfoot = dot_matrix_4x4(world_to_com_inv, world_to_rfoot);
+
+  // vector<double> q_lfoot = {0, 0, 0, 0};
+  vector<double> q_lfoot = quaternion_from_matrix(return_matrix_3x3_from_4x4(com_to_lfoot));
+  // vector<double> q_rfoot = {0, 0, 0, 0};
+  vector<double> q_rfoot = quaternion_from_matrix(return_matrix_3x3_from_4x4(com_to_rfoot));
+
+  left_foot_pose = vectorReturn(com_to_lfoot[0][3], com_to_lfoot[1][3], com_to_lfoot[2][3], q_lfoot[1], q_lfoot[2], q_lfoot[3], q_lfoot[0]);
+  right_foot_pose = vectorReturn(com_to_rfoot[0][3], com_to_rfoot[1][3], com_to_rfoot[2][3], q_rfoot[1], q_rfoot[2], q_rfoot[3], q_rfoot[0]);
+
+  /*
+  printVector(7, left_foot_pose);
+  printVector(7, right_foot_pose);
+  */
+
+  return *this;
+}
+
+GaitController &GaitController::swap_support_foot()
+{
+  if (support_foot == RIGHT_SUPPORT)
+  {
+    support_foot = LEFT_SUPPORT;
+  }
+  else
+  {
+    support_foot = RIGHT_SUPPORT;
+  }
+  return *this;
+}
+
+GaitController &GaitController::add_new_footstep()
+{
+  footsteps.erase(footsteps.begin() + 0);
+  if (support_foot == LEFT_SUPPORT)
+  {
+    sx = cmd_x;
+    sy = -2 * hip_offset + cmd_y;
+    sa = sa + cmd_a;
+    double dx = footsteps[footsteps.size() - 1][0] + cos(sa) * sx + (-sin(sa) * sy);
+    double dy = footsteps[footsteps.size() - 1][1] + sin(sa) * sx + cos(sa) * sy;
+    vector<double> myTemp = {dx, dy, sa};
+    footsteps.push_back(myTemp);
+    footsteps_record.push_back(myTemp);
+  }
+  else if (support_foot == RIGHT_SUPPORT)
+  {
+    sx = cmd_x ;
+    sy = 2 * hip_offset + cmd_y;
+    sa = sa + cmd_a;
+    double dx = footsteps[footsteps.size() - 1][0] + cos(sa) * sx + (-sin(sa) * sy);
+    double dy = footsteps[footsteps.size() - 1][1] + sin(sa) * sx + cos(sa) * sy;
+    vector<double> myTemp = {dx, dy, sa};
+    footsteps.push_back(myTemp);
+    footsteps_record.push_back(myTemp);
+  }
+  swap_support_foot();
+  return *this;
+}
+
+GaitController &GaitController::get_foot_trajectory()
+{
+  // Get initial position and orientation of swing foot
+  if (t == 0)
+  {
+    if (support_foot == LEFT_SUPPORT)
+    {
+      init_rfoot_pose[0] = cur_rfoot[0];
+      init_rfoot_pose[1] = cur_rfoot[1];
+      init_rfoot_pose[2] = 0;
+      init_rfoot_pose[3] = cur_rfoot[3];
+      init_rfoot_pose[4] = cur_rfoot[4];
+      init_rfoot_pose[5] = cur_rfoot[5];
+      init_rfoot_pose[6] = cur_rfoot[6];
+
+      // Set initial position of swing foot
+      init_rfoot_position[0] = init_rfoot_pose[0];
+      init_rfoot_position[1] = init_rfoot_pose[1];
+      init_rfoot_position[2] = init_rfoot_pose[2];
+      // vector<double> euler = {0, 0, 0};
+      vector<double> euler = euler_from_quaternion(init_rfoot_pose[3], init_rfoot_pose[4], init_rfoot_pose[5], init_rfoot_pose[6]);
+
+      // Set initial yaw orientation from swing foot
+      init_rfoot_orientation_yaw = euler[2];
+      // Set target foot pose from next footstep
+
+      target_rfoot_pose[0] = footsteps[1][0];
+      target_rfoot_pose[1] = footsteps[1][1];
+      target_rfoot_pose[2] = 0;
+      // vector<double> q = {0, 0, 0, 0};
+      vector<double> q = quaternion_from_euler(0, 0, footsteps[1][2]);
+      target_rfoot_pose[3] = q[0];
+      target_rfoot_pose[4] = q[1];
+      target_rfoot_pose[5] = q[2];
+      target_rfoot_pose[6] = q[3];
+      // Set target position of swing foot
+      target_rfoot_position[0] = target_rfoot_pose[0];
+      target_rfoot_position[1] = target_rfoot_pose[1];
+      target_rfoot_position[2] = target_rfoot_pose[2];
+      euler = euler_from_quaternion(target_rfoot_pose[3], target_rfoot_pose[4], target_rfoot_pose[5], target_rfoot_pose[6]);
+      // Set target orientation of swing foot
+      target_rfoot_orientation_yaw = euler[2];
+      euler = euler_from_quaternion(cur_lfoot[3], cur_lfoot[4], cur_lfoot[5], cur_lfoot[6]);
+      double support_foot_yaw = euler[2];
+      // Calculate initial CoM yaw orientation and target CoM yaw orientation
+      init_com_yaw = (support_foot_yaw + init_rfoot_orientation_yaw) / 2;
+      target_com_yaw = (support_foot_yaw + target_rfoot_orientation_yaw) / 2;
+    }
+
+    if (support_foot == RIGHT_SUPPORT)
+    {
+      init_lfoot_pose[0] = cur_lfoot[0];
+      init_lfoot_pose[1] = cur_lfoot[1];
+      init_lfoot_pose[2] = 0;
+      init_lfoot_pose[3] = cur_lfoot[3];
+      init_lfoot_pose[4] = cur_lfoot[4];
+      init_lfoot_pose[5] = cur_lfoot[5];
+      init_lfoot_pose[6] = cur_lfoot[6];
+      init_lfoot_position[0] = init_lfoot_pose[0];
+      init_lfoot_position[1] = init_lfoot_pose[1];
+      init_lfoot_position[2] = init_lfoot_pose[2];
+      // vector<double> euler = {0, 0, 0};
+      vector<double> euler = euler_from_quaternion(init_lfoot_pose[3], init_lfoot_pose[4], init_lfoot_pose[5], init_lfoot_pose[6]);
+      init_lfoot_orientation_yaw = euler[2];
+      target_lfoot_pose[0] = footsteps[1][0];
+      target_lfoot_pose[1] = footsteps[1][1];
+      target_lfoot_pose[2] = 0;
+      // vector<double> q = {0, 0, 0, 0};
+      vector<double> q = quaternion_from_euler(0, 0, footsteps[1][2]);
+      target_lfoot_pose[3] = q[0];
+      target_lfoot_pose[4] = q[1];
+      target_lfoot_pose[5] = q[2];
+      target_lfoot_pose[6] = q[3];
+      target_lfoot_position[0] = target_lfoot_pose[0];
+      target_lfoot_position[1] = target_lfoot_pose[1];
+      target_lfoot_position[2] = target_lfoot_pose[2];
+      euler = euler_from_quaternion(target_lfoot_pose[3], target_lfoot_pose[4], target_lfoot_pose[5], target_lfoot_pose[6]);
+      target_lfoot_orientation_yaw = euler[2];
+      euler = euler_from_quaternion(cur_rfoot[3], cur_rfoot[4], cur_rfoot[5], cur_rfoot[6]);
+      double support_foot_yaw = euler[2];
+      init_com_yaw = (support_foot_yaw + init_lfoot_orientation_yaw) / 2;
+      target_com_yaw = (support_foot_yaw + target_lfoot_orientation_yaw) / 2;
+    }
+  }
+
+  // Generate foot trajectory
+  if (t < (t_dsp / 2.0) || t >= (t_dsp / 2.0 + t_ssp))
+  {
+    t_bez = 0;
+  }
+  else
+  {
+    if (support_foot == LEFT_SUPPORT)
+    {
+      cur_lfoot[0] = footsteps[0][0];
+      cur_lfoot[1] = footsteps[0][1];
+      cur_lfoot[2] = 0;
+      // vector<double> q = {0, 0, 0, 0};
+      vector<double> q = quaternion_from_euler(0, 0, footsteps[0][2]);
+
+      cur_lfoot[3] = q[0];
+      cur_lfoot[4] = q[1];
+      cur_lfoot[5] = q[2];
+      cur_lfoot[6] = q[3];
+
+      // vector<double> path = {0, 0, 0};
+      vector<double> path = swing_foot_path(init_rfoot_position, target_rfoot_position, max_swing_height, t_bez);
+      cur_rfoot[0] = path[0];
+      cur_rfoot[1] = path[1];
+      cur_rfoot[2] = path[2];
+
+      // vector<double> yaw_path = {0, 0};
+      vector<double> yaw_path = rot_path(init_rfoot_orientation_yaw, target_rfoot_orientation_yaw, t_ssp, t_bez);
+      q = quaternion_from_euler(0, 0, yaw_path[1]);
+
+      cur_rfoot[3] = q[0];
+      cur_rfoot[4] = q[1];
+      cur_rfoot[5] = q[2];
+      cur_rfoot[6] = q[3];
+
+      /*
+        for(int i =0; i<=6; i++)
+        {
+          cout<<"cur_lfoot["<<i<<"]: "<<cur_lfoot[i]<<endl;
+          cout<<"cur_rfoot["<<i<<"]: "<<cur_rfoot[i]<<endl;
+        }
+      */
+
+    }
+    else if (support_foot == RIGHT_SUPPORT)
+    {
+      cur_rfoot[0] = footsteps[0][0];
+      cur_rfoot[1] = footsteps[0][1];
+      cur_rfoot[2] = 0;
+      // vector<double> q = {0, 0, 0, 0};
+      vector<double> q = quaternion_from_euler(0, 0, footsteps[0][2]);
+
+      cur_rfoot[3] = q[0];
+      cur_rfoot[4] = q[1];
+      cur_rfoot[5] = q[2];
+      cur_rfoot[6] = q[3];
+
+      // vector<double> path = {0, 0, 0};
+      vector<double> path = swing_foot_path(init_lfoot_position, target_lfoot_position, max_swing_height, t_bez);
+
+      cur_lfoot[0] = path[0];
+      cur_lfoot[1] = path[1];
+      cur_lfoot[2] = path[2];
+
+      // vector<double> yaw_path = {0, 0};
+      vector<double> yaw_path = rot_path(init_lfoot_orientation_yaw, target_lfoot_orientation_yaw, t_ssp, t_bez);
+      q = quaternion_from_euler(0, 0, yaw_path[1]);
+
+      cur_lfoot[3] = q[0];
+      cur_lfoot[4] = q[1];
+      cur_lfoot[5] = q[2];
+      cur_lfoot[6] = q[3];
+
+      /*
+        for(int i =0; i<=6; i++)
+        {
+          cout<<"cur_lfoot["<<i<<"]: "<<cur_lfoot[i]<<endl;
+          cout<<"cur_rfoot["<<i<<"]: "<<cur_rfoot[i]<<endl;
+        }
+      */
+
+    }
+    // Generate CoM yaw path
+    // vector<double> yaw_path = {0, 0};
+    vector<double> yaw_path = rot_path(init_com_yaw, target_com_yaw, t_ssp, t_bez);
+    com_yaw = yaw_path[1];
+    t_bez += dt_bez;
+  }
+
+  return *this;
+}
+
+GaitController &GaitController::get_com_trajectory()
+{
+  double Tc = sqrt(9.81 / zc);
+  vector<double> cx = {0,
+                       ((sinh(Tc * (t1 - tf)) * (sup_x - com0_x)) / (Tc * t1 * sinh(Tc * tf)) - (sinh(Tc * (t2 - tf)) * (sup_x - com1_x)) / (Tc * sinh(Tc * tf) * (t2 - tf))),
+                       (((cosh(Tc * (2 * t1 - tf)) - cosh(Tc * tf)) * (sup_x - com0_x)) / (2 * Tc * t1 * sinh(Tc * tf)) - ((cosh(Tc * (t1 + t2 - tf)) - cosh(Tc * (t1 - t2 + tf))) * (sup_x - com1_x)) / (2 * Tc * sinh(Tc * tf) * (t2 - tf))),
+                       (((sinh(Tc * (2 * t1 - tf)) + sinh(Tc * tf)) * (sup_x - com0_x)) / (2 * Tc * t1 * sinh(Tc * tf)) - ((sinh(Tc * (t1 + t2 - tf)) - sinh(Tc * (t1 - t2 + tf))) * (sup_x - com1_x)) / (2 * Tc * sinh(Tc * tf) * (t2 - tf))),
+                       (((cosh(Tc * (t1 + t2 - tf)) - cosh(Tc * (t1 - t2 + tf))) * (sup_x - com0_x)) / (2 * Tc * t1 * sinh(Tc * tf)) - ((cosh(Tc * (2 * t2 - tf)) - cosh(Tc * tf)) * (sup_x - com1_x)) / (2 * Tc * sinh(Tc * tf) * (t2 - tf))),
+                       (((sup_x - com0_x) * (sinh(Tc * (t1 + t2 - tf)) + sinh(Tc * (t1 - t2 + tf)))) / (2 * Tc * t1 * sinh(Tc * tf)) - ((sinh(Tc * (2 * t2 - tf)) + sinh(Tc * tf)) * (sup_x - com1_x)) / (2 * Tc * sinh(Tc * tf) * (t2 - tf)))
+                      };
+
+  vector<double> cy = {0,
+                       ((sinh(Tc * (t1 - tf)) * (sup_y - com0_y)) / (Tc * t1 * sinh(Tc * tf)) - (sinh(Tc * (t2 - tf)) * (sup_y - com1_y)) / (Tc * sinh(Tc * tf) * (t2 - tf))),
+                       (((cosh(Tc * (2 * t1 - tf)) - cosh(Tc * tf)) * (sup_y - com0_y)) / (2 * Tc * t1 * sinh(Tc * tf)) - ((cosh(Tc * (t1 + t2 - tf)) - cosh(Tc * (t1 - t2 + tf))) * (sup_y - com1_y)) / (2 * Tc * sinh(Tc * tf) * (t2 - tf))),
+                       (((sinh(Tc * (2 * t1 - tf)) + sinh(Tc * tf)) * (sup_y - com0_y)) / (2 * Tc * t1 * sinh(Tc * tf)) - ((sinh(Tc * (t1 + t2 - tf)) - sinh(Tc * (t1 - t2 + tf))) * (sup_y - com1_y)) / (2 * Tc * sinh(Tc * tf) * (t2 - tf))),
+                       (((cosh(Tc * (t1 + t2 - tf)) - cosh(Tc * (t1 - t2 + tf))) * (sup_y - com0_y)) / (2 * Tc * t1 * sinh(Tc * tf)) - ((cosh(Tc * (2 * t2 - tf)) - cosh(Tc * tf)) * (sup_y - com1_y)) / (2 * Tc * sinh(Tc * tf) * (t2 - tf))),
+                       (((sup_y - com0_y) * (sinh(Tc * (t1 + t2 - tf)) + sinh(Tc * (t1 - t2 + tf)))) / (2 * Tc * t1 * sinh(Tc * tf)) - ((sinh(Tc * (2 * t2 - tf)) + sinh(Tc * tf)) * (sup_y - com1_y)) / (2 * Tc * sinh(Tc * tf) * (t2 - tf)))
+                      };
+
+  if (t >= t0 && t < t1)
+  {
+    com[0] = com0_x + ((sup_x - com0_x) / (t1 - t0)) * (t - t0) + cx[0] * cosh(Tc * t) + cx[1] * sinh(Tc * t);
+    com[1] = com0_y + ((sup_y - com0_y) / (t1 - t0)) * (t - t0) + cy[0] * cosh(Tc * t) + cy[1] * sinh(Tc * t);
+  }
+  else if (t >= t1 && t < t2)
+  {
+    com[0] = sup_x + cx[2] * cosh(Tc * (t - t1)) + cx[3] * sinh(Tc * (t - t1));
+    com[1] = sup_y + cy[2] * cosh(Tc * (t - t1)) + cy[3] * sinh(Tc * (t - t1));
+  }
+  else if (t >= t2 && t < tf)
+  {
+    com[0] = sup_x + ((com1_x - sup_x) / (tf - t2)) * (t - t2) + cx[4] * cosh(Tc * (t - t2)) + cx[5] * sinh(Tc * (t - t2));
+    com[1] = sup_y + ((com1_y - sup_y) / (tf - t2)) * (t - t2) + cy[4] * cosh(Tc * (t - t2)) + cy[5] * sinh(Tc * (t - t2));
+  }
+
+  // CoM height is constant
+  com[2] = zc;
+  // CoM orientation
+  // vector<double> q = {0, 0, 0, 0};
+  vector<double> q = quaternion_from_euler(0, 0, com_yaw);
+  com[3] = q[0];
+  com[4] = q[1];
+  com[5] = q[2];
+  com[6] = q[3];
+
+  /*
+    for(int i =0; i<=6; i++)
+    {
+      cout<<i<<", "<<com[i]<<endl;
+    }
+  */
+
+  com_x_record.push_back(com[0]);
+  com_y_record.push_back(com[1]);
+  com_z_record.push_back(com[2]);
+
+  return *this;
+}
+
+GaitController &GaitController::get_zmp_trajectory()
+{
+  double epsilon = 0.0001;
+  double td = fmod(t, t_step);
+
+  if (td > -epsilon && td < epsilon)
+  {
+    t0 = t;
+    t1 = t0 + (t_ssp / 2);
+    t2 = t1 + t_dsp;
+    tf = t_step;
+
+    // Initial CoM position
+    com0_x = footsteps[0][0] + (footsteps[1][0] - footsteps[0][0]) / 2;
+    com0_y = footsteps[0][1] + (footsteps[1][1] - footsteps[0][1]) / 2;
+    // Final CoM position
+    com1_x = footsteps[1][0] + (footsteps[2][0] - footsteps[1][0]) / 2;
+    com1_y = footsteps[1][1] + (footsteps[2][1] - footsteps[1][1]) / 2;
+    // Support foot
+    sup_x = footsteps[1][0];
+    sup_y = footsteps[1][1];
+  }
+
+  if (t >= t0 && t < t1)
+  {
+    zmp_x = com0_x + ((sup_x - com0_x) / (t1 - t0)) * t;
+    zmp_y = com0_y + ((sup_y - com0_y) / (t1 - t0)) * t;
+  }
+  else if (t >= t1 && t < t2)
+  {
+    zmp_x = sup_x;
+    zmp_y = sup_y;
+  }
+  else if (t >= t2 && t < tf)
+  {
+    zmp_x = sup_x + ((com1_x - sup_x) / (tf - t2)) * (t - t2);
+    zmp_y = sup_y + ((com1_y - sup_y) / (tf - t2)) * (t - t2);
+  }
+  zmp_x_record.push_back(zmp_x);
+  zmp_y_record.push_back(zmp_y);
+
+  /*
+    cout<<"get_zmp_trajectory(), zmp_x: "<<zmp_x<<endl;
+    cout<<"get_zmp_trajectory(), zmp_y: "<<zmp_y<<endl;
+  */
+
+  return *this;
+}
+
+GaitController &GaitController::get_walking_pattern()
+{
+  get_zmp_trajectory();
+  get_com_trajectory();
+  get_foot_trajectory();
+  get_foot_pose();
+  t += dt;
+  if (t > t_step)
+  {
+    t = 0;
+    add_new_footstep();
+  }
+  return *this;
+}
+
+GaitController &GaitController::print_gait_parameter()
+{
+  cout << "zc :" << zc << endl;
+  cout << "dt :" << dt << endl << endl;
+  return *this;
+}
+
+void initialize(GaitController &self)
+{
+  self.print_gait_parameter();
+}
+
+void run(GaitController &gc)
+{
+  cout << "===========================" << endl;
+  cout << "Barelang Gait Controller   " << endl;
+  cout << "===========================" << endl;
+  initialize(gc);
+  int t_sim = 5;
+  double t = 0;
+
+  vector<vector<double>> com_trajectory;
+  vector<vector<double>> lfoot_trajectory;
+  vector<vector<double>> rfoot_trajectory;
+
+  while (t < t_sim)
+  {
+    gc.get_walking_pattern();
+    com_trajectory.push_back(vectorReturn(gc.com[0], gc.com[1], gc.com[2], gc.com[6], gc.com[3], gc.com[4], gc.com[5]));
+    rfoot_trajectory.push_back(vectorReturn(gc.cur_rfoot[0], gc.cur_rfoot[1], gc.cur_rfoot[2], gc.cur_rfoot[6], gc.cur_rfoot[3], gc.cur_rfoot[4], gc.cur_rfoot[5]));
+    lfoot_trajectory.push_back(vectorReturn(gc.cur_lfoot[0], gc.cur_lfoot[1], gc.cur_lfoot[2], gc.cur_lfoot[6], gc.cur_lfoot[3], gc.cur_lfoot[4], gc.cur_lfoot[5]));
+    gc.foot_xl_record.push_back(gc.cur_lfoot[0]);
+    gc.foot_yl_record.push_back(gc.cur_lfoot[1]);
+    gc.foot_zl_record.push_back(gc.cur_lfoot[2]);
+    gc.foot_xr_record.push_back(gc.cur_rfoot[0]);
+    gc.foot_yr_record.push_back(gc.cur_rfoot[1]);
+    gc.foot_zr_record.push_back(gc.cur_rfoot[2]);
+    printVector(7, gc.cur_lfoot);
+    t += gc.dt;
+
+    cout << "iterasi sebanyak " << i << " kali, nilai t = " << t << endl << endl;
+    i++;
+  }
+
+  plot3(gc.foot_xl_record, gc.foot_yl_record, gc.foot_zl_record, gc.com_x_record, gc.com_y_record, gc.com_z_record, gc.foot_xr_record, gc.foot_yr_record, gc.foot_zr_record);
+  
+  // plot3(gc.foot_xl_record, gc.foot_yl_record, gc.foot_zl_record);
+
+  
+  auto ax1 = nexttile();
+  auto ax2 = nexttile();
+  auto ax3 = nexttile();
+  plot3(ax1, gc.com_x_record, gc.com_y_record, gc.com_z_record);
+  plot3(ax2, gc.foot_xl_record, gc.foot_yl_record, gc.foot_zl_record);
+  plot3(ax3, gc.foot_xr_record, gc.foot_yr_record, gc.foot_zr_record);
+  
+
+  show();
+}
+
+int main()
+{
+  GaitController gc;
+  run(gc);
+  return 0;
+}

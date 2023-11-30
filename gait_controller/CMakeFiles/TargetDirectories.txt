@@ -1,0 +1,13 @@
+/home/charlie/gait_controller/CMakeFiles/rebuild_cache.dir
+/home/charlie/gait_controller/CMakeFiles/edit_cache.dir
+/home/charlie/gait_controller/CMakeFiles/my_target.dir
+/home/charlie/gait_controller/matplotplusplus/CMakeFiles/rebuild_cache.dir
+/home/charlie/gait_controller/matplotplusplus/CMakeFiles/edit_cache.dir
+/home/charlie/gait_controller/matplotplusplus/source/CMakeFiles/rebuild_cache.dir
+/home/charlie/gait_controller/matplotplusplus/source/CMakeFiles/edit_cache.dir
+/home/charlie/gait_controller/matplotplusplus/source/3rd_party/CMakeFiles/rebuild_cache.dir
+/home/charlie/gait_controller/matplotplusplus/source/3rd_party/CMakeFiles/edit_cache.dir
+/home/charlie/gait_controller/matplotplusplus/source/3rd_party/CMakeFiles/nodesoup.dir
+/home/charlie/gait_controller/matplotplusplus/source/matplot/CMakeFiles/rebuild_cache.dir
+/home/charlie/gait_controller/matplotplusplus/source/matplot/CMakeFiles/edit_cache.dir
+/home/charlie/gait_controller/matplotplusplus/source/matplot/CMakeFiles/matplot.dir

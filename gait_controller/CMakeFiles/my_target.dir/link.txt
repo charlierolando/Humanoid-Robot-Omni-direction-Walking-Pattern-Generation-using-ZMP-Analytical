@@ -1,0 +1,1 @@
+/usr/bin/c++    -rdynamic CMakeFiles/my_target.dir/main.o  -o my_target   -L/home/charlie/gait_controller/matplotplusplus/source/matplot  -L/home/charlie/gait_controller/matplotplusplus/source/3rd_party  matplotplusplus/source/matplot/libmatplot.a -ljpeg -ltiff -lz -lpng -lz -lpng -llapack -lblas -lpthread matplotplusplus/source/3rd_party/libnodesoup.a 
